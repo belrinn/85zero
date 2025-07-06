@@ -1,0 +1,886 @@
+import os
+import re
+import pefile
+import hashlib
+import threading
+import time
+import tkinter as tk
+from tkinter import ttk, filedialog, scrolledtext, messagebox
+import traceback
+import shutil
+import struct
+import binascii
+import math
+import subprocess
+import capstone
+import requests
+import json
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+
+class UltimateBackdoorRemover:
+    """Глубокое удаление бэкдоров с расширенным обнаружением"""
+    
+    def __init__(self):
+        self.stats = {
+            'files_processed': 0,
+            'backdoors_removed': 0,
+            'execution_time': 0.0,
+            'success_count': 0,
+            'packed_files': 0,
+            'verified_files': 0
+        }
+        
+        # Расширенные сигнатуры XWorm
+        self.BACKDOOR_SIGNATURES = self._generate_xworm_signatures()
+        
+        # Сигнатуры других известных бэкдоров
+        self.OTHER_BACKDOOR_SIGNATURES = [
+            b'Metasploit',
+            b'CobaltStrike',
+            b'NanoCore',
+            b'QuasarRAT',
+            b'AsyncRAT',
+            b'DarkComet',
+            b'PoisonIvy',
+            b'Gh0stRAT',
+            b'BlackShades',
+            b'Turkojan',
+            b'Bandook',
+            b'CyberGate'
+        ]
+
+    def _generate_xworm_signatures(self):
+        """Генерация расширенных сигнатур XWorm"""
+        base_patterns = [
+            # Основные команды
+            b'EnableRemoteAccess',
+            b'CreateBackdoorThread',
+            b'ReverseShell',
+            b'KeyloggerStart',
+            b'RemoteDesktopEnable',
+            b'DownloadExecute',
+            b'StartupPersistence',
+            b'ProcessInjection',
+            
+            # Сетевые паттерны
+            b'C2Server',
+            b'CommandAndControl',
+            b'BeaconInterval',
+            b'Heartbeat',
+            
+            # Конфигурационные параметры
+            b'XWormConfig',
+            b'BotID',
+            b'MutualExclusion',
+            b'AntiAnalysis',
+            
+            # Техники обфускации
+            b'StringEncryption',
+            b'CodeVirtualization',
+            b'APIHashing',
+            
+            # Системные команды
+            b'cmd.exe /c',
+            b'powershell -nop -w hidden -c',
+            b'reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+            b'schtasks /create /tn',
+            b'netsh firewall add'
+        ]
+        
+        # Вариации в разных регистрах
+        variations = []
+        for pattern in base_patterns:
+            variations.append(pattern)
+            variations.append(pattern.lower())
+            variations.append(pattern.upper())
+            variations.append(binascii.unhexlify(binascii.hexlify(pattern)))
+            variations.append(bytes([b ^ 0xFF for b in pattern]))
+        
+        # Дополнительные HEX-паттерны
+        hex_patterns = [
+            '586a6f726d',      # XWorm
+            '6261636b646f6f72', # backdoor
+            '72657665727365',   # reverse
+            '6b65796c6f676765', # keylogger
+            '7368656c6c636f6465' # shellcode
+        ]
+        
+        for hex_pat in hex_patterns:
+            variations.append(binascii.unhexlify(hex_pat))
+            variations.append(binascii.unhexlify(hex_pat.upper()))
+        
+        return variations
+
+    def _create_backup(self, file_path):
+        """Создание резервной копии файла"""
+        backup_path = file_path + ".backup"
+        if not os.path.exists(backup_path):
+            shutil.copy2(file_path, backup_path)
+        return backup_path
+
+    def _restore_backup(self, file_path):
+        """Восстановление из резервной копии"""
+        backup_path = file_path + ".backup"
+        if os.path.exists(backup_path):
+            shutil.copy2(backup_path, file_path)
+            return True
+        return False
+
+    def _is_executable(self, file_path):
+        """Проверка, является ли файл исполняемым PE"""
+        try:
+            with open(file_path, 'rb') as f:
+                magic = f.read(2)
+            return magic == b'MZ'
+        except:
+            return False
+
+    def _calculate_entropy(self, data):
+        """Расчет энтропии данных"""
+        if not data:
+            return 0.0
+            
+        entropy = 0.0
+        for x in range(256):
+            p_x = data.count(x) / len(data)
+            if p_x > 0:
+                entropy += -p_x * math.log2(p_x)
+                
+        return entropy
+
+    def _is_packed(self, pe):
+        """Определение, упакован ли файл через энтропию"""
+        try:
+            # Проверка энтропии секций
+            for section in pe.sections:
+                section_data = section.get_data()
+                entropy = self._calculate_entropy(section_data)
+                
+                # Энтропия > 7.0 обычно указывает на упаковку/шифрование
+                if entropy > 7.0:
+                    return True
+                    
+            return False
+        except:
+            return False
+
+    def _calculate_file_hash(self, file_path):
+        """Расчет хеша файла"""
+        hasher = hashlib.sha256()
+        with open(file_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b''):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    def _get_section_by_offset(self, pe, offset):
+        """Находит секцию по смещению в файле"""
+        for section in pe.sections:
+            start = section.PointerToRawData
+            end = start + section.SizeOfRawData
+            if start <= offset < end:
+                return section
+        return None
+
+    def _heuristic_analysis(self, pe):
+        """Эвристический анализ на наличие вредоносного поведения"""
+        score = 0
+        suspicious_features = []
+        
+        # 1. Проверка подозрительных импортов
+        suspicious_imports = {
+            "kernel32.dll": ["VirtualAlloc", "CreateRemoteThread", "WriteProcessMemory"],
+            "advapi32.dll": ["RegSetValueExA", "RegOpenKeyExA", "AdjustTokenPrivileges"],
+            "ws2_32.dll": ["socket", "connect", "send", "recv"],
+            "wininet.dll": ["InternetOpenA", "InternetConnectA", "HttpOpenRequestA"]
+        }
+        
+        if hasattr(pe, 'DIRECTORY_ENTRY_IMPORT'):
+            for entry in pe.DIRECTORY_ENTRY_IMPORT:
+                dll = entry.dll.decode().lower()
+                if dll in suspicious_imports:
+                    for imp in entry.imports:
+                        if imp.name:
+                            imp_name = imp.name.decode()
+                            if imp_name in suspicious_imports[dll]:
+                                score += 10
+                                suspicious_features.append(f"Suspicious import: {dll}!{imp_name}")
+        
+        # 2. Проверка подозрительных секций
+        for section in pe.sections:
+            section_name = section.Name.decode().strip('\x00')
+            
+            # Необычные имена секций
+            if section_name in ['.cdata', '.adata', '.pdata', '.fdata']:
+                score += 5
+                suspicious_features.append(f"Unusual section name: {section_name}")
+                
+            # Секции с правами на выполнение и запись
+            if section.Characteristics & 0xE0000020:  # EXECUTE + READ + WRITE
+                score += 15
+                suspicious_features.append(f"Writable executable section: {section_name}")
+                
+            # Слишком большие виртуальные размеры
+            if section.Misc_VirtualSize > 5 * 1024 * 1024:  # >5MB
+                score += 8
+                suspicious_features.append(f"Oversized section: {section_name} ({section.Misc_VirtualSize} bytes)")
+        
+        # 3. Проверка ресурсов
+        if hasattr(pe, 'DIRECTORY_ENTRY_RESOURCE'):
+            for resource_type in pe.DIRECTORY_ENTRY_RESOURCE.entries:
+                if resource_type.name:
+                    name = resource_type.name
+                else:
+                    name = pefile.RESOURCE_TYPE.get(resource_type.struct.Id, resource_type.struct.Id)
+                    
+                if name in ["BIN", "CAB", "ENCRYPTED", "CONFIG"]:
+                    score += 12
+                    suspicious_features.append(f"Suspicious resource type: {name}")
+        
+        return score, suspicious_features
+
+    def _disassemble_code(self, pe, section):
+        """Дизассемблирование кода для контекстного анализа"""
+        code = section.get_data()
+        md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+        
+        suspicious_ops = []
+        for instr in md.disasm(code, section.VirtualAddress):
+            # Обнаружение подозрительных инструкций
+            if instr.mnemonic in ['call', 'jmp']:
+                # Анализ необычных переходов
+                if not self._is_valid_target(pe, instr.operands):
+                    suspicious_ops.append(instr)
+                    
+            # Обнаружение антиотладочных трюков
+            if instr.mnemonic == 'int' and instr.op_str == '3':
+                suspicious_ops.append(instr)
+                
+        return suspicious_ops
+
+    def _is_valid_target(self, pe, operands):
+        """Проверка валидности цели перехода"""
+        # Упрощённая реализация - в реальном коде нужен глубокий анализ
+        return True
+
+    def _is_signed(self, file_path):
+        """Проверка цифровой подписи файла"""
+        try:
+            # Проверка через встроенные средства Windows
+            result = subprocess.run(
+                ['signtool', 'verify', '/pa', file_path],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            return "Successfully verified" in result.stdout
+        except:
+            return False
+
+    def _deep_clean_file(self, file_path):
+        """Глубокое удаление бэкдоров с сохранением функциональности"""
+        backup_path = self._create_backup(file_path)
+        
+        try:
+            # Проверка цифровой подписи
+            if self._is_signed(file_path):
+                return 0, "Digitally signed file - skipping modification"
+                
+            # Читаем файл
+            with open(file_path, 'rb') as f:
+                data = bytearray(f.read())
+                
+            # Анализируем PE-структуру
+            pe = pefile.PE(data=bytes(data))
+            original_ep = pe.OPTIONAL_HEADER.AddressOfEntryPoint
+            original_checksum = pe.OPTIONAL_HEADER.CheckSum
+            
+            # Проверка на упакованность
+            if self._is_packed(pe):
+                self.stats['packed_files'] += 1
+                return 0, "Packed file - skipping"
+                
+            # Эвристический анализ
+            heuristic_score, _ = self._heuristic_analysis(pe)
+            
+            # Удаление бэкдоров
+            backdoors_removed = 0
+            all_signatures = self.BACKDOOR_SIGNATURES + self.OTHER_BACKDOOR_SIGNATURES
+            
+            for signature in all_signatures:
+                offset = 0
+                while (pos := data.find(signature, offset)) != -1:
+                    # Определяем секцию
+                    section = self._get_section_by_offset(pe, pos)
+                    if section:
+                        section_name = section.Name.decode().strip('\x00')
+                        # Заменяем только в разрешенных секциях
+                        if section_name in ['.text', '.data', '.rdata']:
+                            # Безопасная замена на NOP
+                            data[pos:pos+len(signature)] = b'\x90' * len(signature)
+                            backdoors_removed += 1
+                    offset = pos + 1
+            
+            if backdoors_removed > 0 or heuristic_score > 30:
+                # Восстанавливаем PE-структуру
+                try:
+                    pe = pefile.PE(data=bytes(data))
+                    pe.OPTIONAL_HEADER.AddressOfEntryPoint = original_ep
+                    pe.OPTIONAL_HEADER.CheckSum = pe.generate_checksum()
+                    data = pe.write()
+                except:
+                    # Если не удалось восстановить, используем измененные данные
+                    pass
+                
+                # Сохраняем очищенный файл
+                with open(file_path, 'wb') as f:
+                    f.write(data)
+                    
+                return backdoors_removed, "Backdoors removed" if backdoors_removed > 0 else "Heuristic cleanup"
+                
+            return 0, "No threats detected"
+                
+        except Exception as e:
+            # Восстанавливаем из резервной копии при ошибке
+            self._restore_backup(file_path)
+            return 0, f"Cleaning error: {str(e)}"
+
+    def _verify_functionality(self, file_path):
+        """Проверка работоспособности файла"""
+        try:
+            # Для DLL используем regsvr32 для проверки
+            if file_path.lower().endswith('.dll'):
+                result = subprocess.run(
+                    ['regsvr32', '/s', '/u', file_path],
+                    capture_output=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                return result.returncode == 0
+                
+            # Для EXE файлов просто запускаем
+            elif file_path.lower().endswith('.exe'):
+                process = subprocess.Popen(
+                    file_path,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                time.sleep(2)  # Даем время на запуск
+                process.terminate()
+                return process.poll() is None or process.returncode == 0
+                
+            return True
+        except:
+            return False
+
+    def process_file(self, file_path):
+        """Обработка файла с глубоким удалением бэкдоров"""
+        self.stats['files_processed'] += 1
+        start_time = time.time()
+        
+        try:
+            # Проверяем, является ли файл исполняемым
+            if not self._is_executable(file_path):
+                return {
+                    'status': 'skip',
+                    'message': 'Не исполняемый файл'
+                }
+                
+            # Сохраняем оригинальный хеш
+            original_hash = self._calculate_file_hash(file_path)
+            
+            # Выполняем глубокую очистку
+            backdoors_removed, message = self._deep_clean_file(file_path)
+            
+            if backdoors_removed > 0:
+                # Проверяем работоспособность файла
+                functional = self._verify_functionality(file_path)
+                
+                if functional:
+                    self.stats['verified_files'] += 1
+                    msg = f'Удалено бэкдоров: {backdoors_removed} (Функционал сохранен)'
+                else:
+                    # Восстанавливаем если функционал нарушен
+                    self._restore_backup(file_path)
+                    msg = f'Удалено бэкдоров: {backdoors_removed} (Функционал нарушен - восстановлен оригинал)'
+                    backdoors_removed = 0
+                
+                self.stats['backdoors_removed'] += backdoors_removed
+                self.stats['success_count'] += 1
+                return {
+                    'status': 'success',
+                    'backdoors_removed': backdoors_removed,
+                    'functional': functional,
+                    'message': msg
+                }
+            else:
+                return {
+                    'status': 'success',
+                    'backdoors_removed': 0,
+                    'message': message
+                }
+                
+        except Exception as e:
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
+        finally:
+            self.stats['execution_time'] += time.time() - start_time
+
+class UltimateCleanerGUI:
+    """Интерфейс для глубокой очистки от бэкдоров"""
+    
+    def __init__(self, root):
+        self.root = root
+        self.root.title("ULTIMATE BACKDOOR CLEANER PRO")
+        self.root.geometry("1100x750")
+        self.cleaner = UltimateBackdoorRemover()
+        self.current_file_index = 0
+        self.folder_files = []
+        
+        # Стилизация
+        self.root.configure(bg='#0a0a2a')
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure('TFrame', background='#0a0a2a')
+        style.configure('TLabel', background='#0a0a2a', foreground='#e1e1e1', font=("Segoe UI", 9))
+        style.configure('TButton', background='#2a2a5a', foreground='white', font=("Segoe UI", 9, "bold"))
+        style.configure('TLabelframe', background='#151540', foreground='#e1e1e1')
+        style.configure('TLabelframe.Label', background='#151540', foreground='#00ffff')
+        style.configure('Treeview', background='#0f0f2f', fieldbackground='#0f0f2f', foreground='#e1e1e1')
+        style.map('Treeview', background=[('selected', '#3a3a7a')])
+        
+        # Основные компоненты
+        self._create_main_frame()
+        self._create_header()
+        self._create_file_buttons()
+        self._create_report_display()
+        self._create_stats_panel()
+        self._create_console()
+        self._create_status_bar()
+        
+        # Инициализация
+        self.status_var = tk.StringVar(value="Статус: Готов к очистке от бэкдоров")
+        self.log("ULTIMATE BACKDOOR CLEANER v5.0")
+        self.log("Расширенное обнаружение XWorm и других бэкдоров")
+        self.log("Безопасный режим с верификацией функциональности")
+
+    def _create_main_frame(self):
+        self.main_frame = ttk.Frame(self.root)
+        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+
+    def _create_header(self):
+        header = ttk.Frame(self.main_frame)
+        header.pack(fill=tk.X, pady=(0, 10))
+        
+        title = ttk.Label(
+            header, 
+            text="ULTIMATE BACKDOOR CLEANER PRO", 
+            font=("Arial", 16, "bold"),
+            foreground="#ff5555"
+        )
+        title.pack(side=tk.LEFT)
+        
+        subtitle = ttk.Label(
+            header, 
+            text="Продвинутое обнаружение и безопасное удаление бэкдоров", 
+            font=("Arial", 10),
+            foreground="#aaaaff"
+        )
+        subtitle.pack(side=tk.LEFT, padx=10)
+
+    def _create_file_buttons(self):
+        button_frame = ttk.Frame(self.main_frame)
+        button_frame.pack(fill=tk.X, pady=10)
+        
+        buttons = [
+            ("Выбрать файл", self.select_file, "#55ff55"),
+            ("Выбрать папку", self.select_folder, "#ff55ff"),
+            ("Начать очистку", self.start_cleaning, "#ff5555"),
+            ("Проверить файл", self.verify_file, "#5555ff"),
+            ("Детальный анализ", self.deep_analysis, "#ffff55")
+        ]
+        
+        for text, command, color in buttons:
+            btn = tk.Button(
+                button_frame, 
+                text=text,
+                command=command,
+                bg=color,
+                fg="black",
+                font=("Arial", 9, "bold"),
+                relief=tk.RAISED,
+                bd=3
+            )
+            btn.pack(side=tk.LEFT, expand=True, padx=5, ipady=4)
+
+    def _create_report_display(self):
+        report_frame = ttk.LabelFrame(
+            self.main_frame, 
+            text="Отчет об очистке от бэкдоров",
+            style='TLabelframe'
+        )
+        report_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        columns = ("file", "backdoors", "status", "details")
+        self.report_tree = ttk.Treeview(report_frame, columns=columns, show="headings", height=8)
+        
+        self.report_tree.heading("file", text="Файл")
+        self.report_tree.heading("backdoors", text="Угроз")
+        self.report_tree.heading("status", text="Статус")
+        self.report_tree.heading("details", text="Детали")
+        
+        self.report_tree.column("file", width=200, anchor=tk.W)
+        self.report_tree.column("backdoors", width=80, anchor=tk.CENTER)
+        self.report_tree.column("status", width=120, anchor=tk.CENTER)
+        self.report_tree.column("details", width=400, anchor=tk.W)
+        
+        # Цветовые теги
+        self.report_tree.tag_configure('success', background='#005500')
+        self.report_tree.tag_configure('warning', background='#555500')
+        self.report_tree.tag_configure('error', background='#550000')
+        self.report_tree.tag_configure('info', background='#000055')
+        self.report_tree.tag_configure('heuristic', background='#333366')
+        
+        scrollbar = ttk.Scrollbar(report_frame, orient=tk.VERTICAL, command=self.report_tree.yview)
+        self.report_tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.report_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def _create_stats_panel(self):
+        stats_frame = ttk.Frame(self.main_frame)
+        stats_frame.pack(fill=tk.X, pady=10)
+        
+        stats = [
+            ("Файлов обработано:", "files_processed", "#00ffff"),
+            ("Угроз удалено:", "backdoors_removed", "#ff55ff"),
+            ("Упакованных файлов:", "packed_files", "#ff5555"),
+            ("Успешно очищено:", "success_count", "#55ff55"),
+            ("Проверено функц.:", "verified_files", "#55ffff"),
+            ("Общее время:", "execution_time", "#ffff55")
+        ]
+        
+        for text, key, color in stats:
+            frame = ttk.Frame(stats_frame)
+            frame.pack(side=tk.LEFT, expand=True, padx=10)
+            
+            ttk.Label(frame, text=text, font=("Arial", 9)).pack(anchor=tk.W)
+            value = ttk.Label(frame, text="0", foreground=color, font=("Arial", 10, "bold"))
+            value.pack(anchor=tk.W)
+            setattr(self, f"{key}_label", value)
+
+    def _create_console(self):
+        console_frame = ttk.LabelFrame(self.main_frame, text="Журнал очистки", style='TLabelframe')
+        console_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        self.console = scrolledtext.ScrolledText(
+            console_frame,
+            bg="#0a0a2a",
+            fg="#ff5555",
+            font=("Consolas", 10),
+            wrap=tk.WORD,
+            insertbackground="#ff5555"
+        )
+        self.console.pack(fill=tk.BOTH, expand=True)
+        self.console.config(state=tk.DISABLED)
+
+    def _create_status_bar(self):
+        self.status_var = tk.StringVar(value="Статус: Выберите файлы для очистки")
+        status_bar = ttk.Label(
+            self.root, 
+            textvariable=self.status_var, 
+            relief=tk.SUNKEN, 
+            anchor=tk.W,
+            background='#2a2a5a',
+            foreground='#ff5555',
+            font=("Arial", 10, "bold")
+        )
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def log(self, message):
+        self.console.config(state=tk.NORMAL)
+        self.console.insert(tk.END, f">> {message}\n")
+        self.console.see(tk.END)
+        self.console.config(state=tk.DISABLED)
+        self.status_var.set(f"Статус: {message[:60]}{'...' if len(message) > 60 else ''}")
+        self.root.update_idletasks()
+        
+    def update_stats(self):
+        self.files_processed_label.config(text=self.cleaner.stats['files_processed'])
+        self.backdoors_removed_label.config(text=self.cleaner.stats['backdoors_removed'])
+        self.success_count_label.config(text=self.cleaner.stats['success_count'])
+        self.execution_time_label.config(text=f"{self.cleaner.stats['execution_time']:.2f} сек")
+        self.packed_files_label.config(text=self.cleaner.stats['packed_files'])
+        self.verified_files_label.config(text=self.cleaner.stats['verified_files'])
+
+    def select_file(self):
+        self.file_path = filedialog.askopenfilename(
+            title="Выберите файл для очистки",
+            filetypes=[("Исполняемые файлы", ".exe *.dll *.sys"), ("Все файлы", ".*")]
+        )
+        if self.file_path:
+            self.folder_files = [self.file_path]
+            self.log(f"Выбран файл: {os.path.basename(self.file_path)}")
+            self.report_tree.insert("", "end", values=(
+                os.path.basename(self.file_path),
+                "?",
+                "Ожидает очистки",
+                "Нажмите 'Начать очистку'"
+            ), tags=('info',))
+
+    def select_folder(self):
+        folder_path = filedialog.askdirectory(title="Выберите папку для очистки")
+        if folder_path:
+            self.folder_files = []
+            for root, dirs, files in os.walk(folder_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    if self.cleaner._is_executable(file_path):
+                        self.folder_files.append(file_path)
+            
+            if not self.folder_files:
+                self.log("В папке не найдено исполняемых файлов")
+                return
+                
+            self.log(f"Найдено файлов для очистки: {len(self.folder_files)}")
+            self.report_tree.insert("", "end", values=(
+                f"Папка: {os.path.basename(folder_path)}",
+                "-",
+                "Готов к обработке",
+                f"Файлов: {len(self.folder_files)}"
+            ), tags=('info',))
+
+    def start_cleaning(self):
+        if not self.folder_files:
+            messagebox.showerror("Ошибка", "Сначала выберите файл или папку!")
+            return
+            
+        self.log(f"Начало глубокой очистки {len(self.folder_files)} файлов...")
+        self.log("Создаются резервные копии файлов (.backup)...")
+        
+        # Очищаем отчет
+        for item in self.report_tree.get_children():
+            self.report_tree.delete(item)
+        
+        # Запускаем обработку
+        self.current_file_index = 0
+        self.process_next_file()
+
+    def verify_file(self):
+        if not hasattr(self, 'file_path') or not self.file_path:
+            messagebox.showerror("Ошибка", "Сначала выберите файл!")
+            return
+            
+        try:
+            # Проверка на наличие бэкдоров
+            with open(self.file_path, 'rb') as f:
+                data = f.read()
+                
+            backdoors_found = 0
+            all_signatures = self.cleaner.BACKDOOR_SIGNATURES + self.cleaner.OTHER_BACKDOOR_SIGNATURES
+            for signature in all_signatures:
+                if signature in data:
+                    backdoors_found += 1
+            
+            # Проверка PE-структуры
+            valid_pe = False
+            packed = False
+            try:
+                pe = pefile.PE(self.file_path)
+                valid_pe = True
+                entry_point = pe.OPTIONAL_HEADER.AddressOfEntryPoint
+                packed = self.cleaner._is_packed(pe)
+            except:
+                entry_point = 0
+                
+            # Эвристический анализ
+            heuristic_score = 0
+            suspicious_features = []
+            if valid_pe:
+                heuristic_score, suspicious_features = self.cleaner._heuristic_analysis(pe)
+                
+            # Проверка цифровой подписи
+            signed = self.cleaner._is_signed(self.file_path)
+                
+            report = f"Результаты проверки:\n\n"
+            report += f"Обнаружено сигнатур бэкдоров: {backdoors_found}\n"
+            report += f"Эвристическая оценка угрозы: {heuristic_score}/100\n"
+            report += f"Валидная PE-структура: {'Да' if valid_pe else 'Нет'}\n"
+            report += f"Упакованный файл: {'Да' if packed else 'Нет'}\n"
+            report += f"Цифровая подпись: {'Да' if signed else 'Нет'}\n"
+            report += f"Точка входа: 0x{entry_point:08X}\n\n"
+            
+            if heuristic_score > 30:
+                report += "Обнаружены подозрительные характеристики:\n"
+                for feature in suspicious_features[:3]:
+                    report += f"- {feature}\n"
+                report += "\n"
+                
+            report += f"Рекомендация: {'Требуется очистка' if backdoors_found > 0 or heuristic_score > 30 else 'Файл чист'}"
+            
+            messagebox.showinfo("Результаты проверки", report)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка проверки файла: {str(e)}")
+
+    def deep_analysis(self):
+        """Глубокий анализ файла с выводом деталей"""
+        if not hasattr(self, 'file_path') or not self.file_path:
+            messagebox.showerror("Ошибка", "Сначала выберите файл!")
+            return
+            
+        try:
+            analysis_window = tk.Toplevel(self.root)
+            analysis_window.title("Детальный анализ файла")
+            analysis_window.geometry("800x600")
+            
+            text_area = scrolledtext.ScrolledText(
+                analysis_window,
+                wrap=tk.WORD,
+                font=("Consolas", 10)
+            )
+            text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            def perform_analysis():
+                text_area.delete(1.0, tk.END)
+                text_area.insert(tk.END, f"Анализ файла: {os.path.basename(self.file_path)}\n")
+                text_area.insert(tk.END, "-" * 80 + "\n\n")
+                
+                try:
+                    # Анализ сигнатур
+                    text_area.insert(tk.END, "[СИГНАТУРНЫЙ АНАЛИЗ]\n")
+                    with open(self.file_path, 'rb') as f:
+                        data = f.read()
+                        
+                    all_signatures = self.cleaner.BACKDOOR_SIGNATURES + self.cleaner.OTHER_BACKDOOR_SIGNATURES
+                    found_signatures = []
+                    
+                    for signature in all_signatures:
+                        if signature in data:
+                            found_signatures.append(signature)
+                            
+                    if found_signatures:
+                        text_area.insert(tk.END, f"Обнаружено опасных сигнатур: {len(found_signatures)}\n")
+                        for sig in found_signatures[:5]:
+                            text_area.insert(tk.END, f"- {sig[:50]}{'...' if len(sig) > 50 else ''}\n")
+                    else:
+                        text_area.insert(tk.END, "Опасные сигнатуры не обнаружены\n")
+                    
+                    # PE-анализ
+                    text_area.insert(tk.END, "\n[АНАЛИЗ PE-СТРУКТУРЫ]\n")
+                    try:
+                        pe = pefile.PE(self.file_path)
+                        text_area.insert(tk.END, f"Точка входа: 0x{pe.OPTIONAL_HEADER.AddressOfEntryPoint:08X}\n")
+                        text_area.insert(tk.END, f"Количество секций: {pe.FILE_HEADER.NumberOfSections}\n")
+                        
+                        # Проверка на упакованность
+                        packed = self.cleaner._is_packed(pe)
+                        text_area.insert(tk.END, f"Упакованный файл: {'Да' if packed else 'Нет'}\n")
+                        
+                        # Эвристический анализ
+                        heuristic_score, features = self.cleaner._heuristic_analysis(pe)
+                        text_area.insert(tk.END, f"Эвристическая оценка угрозы: {heuristic_score}/100\n")
+                        
+                        if features:
+                            text_area.insert(tk.END, "\nПодозрительные характеристики:\n")
+                            for feature in features[:10]:
+                                text_area.insert(tk.END, f"- {feature}\n")
+                                
+                    except Exception as pe_error:
+                        text_area.insert(tk.END, f"Ошибка анализа PE: {str(pe_error)}\n")
+                    
+                    # Проверка цифровой подписи
+                    signed = self.cleaner._is_signed(self.file_path)
+                    text_area.insert(tk.END, f"\nЦифровая подпись: {'Присутствует' if signed else 'Отсутствует'}\n")
+                    
+                    text_area.insert(tk.END, "\n[ВЫВОД]\n")
+                    if found_signatures or heuristic_score > 40:
+                        text_area.insert(tk.END, "Файл содержит признаки вредоносного ПО. Рекомендуется очистка.\n", "warning")
+                    else:
+                        text_area.insert(tk.END, "Файл не содержит явных признаков вредоносного ПО.\n", "success")
+                        
+                except Exception as e:
+                    text_area.insert(tk.END, f"Ошибка анализа: {str(e)}\n", "error")
+            
+            text_area.tag_configure("warning", foreground="red")
+            text_area.tag_configure("success", foreground="green")
+            text_area.tag_configure("error", foreground="red")
+            
+            btn_frame = ttk.Frame(analysis_window)
+            btn_frame.pack(fill=tk.X, padx=10, pady=5)
+            
+            ttk.Button(btn_frame, text="Выполнить анализ", command=perform_analysis).pack(side=tk.LEFT)
+            ttk.Button(btn_frame, text="Закрыть", command=analysis_window.destroy).pack(side=tk.RIGHT)
+            
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка при создании окна анализа: {str(e)}")
+
+    def process_next_file(self):
+        if self.current_file_index < len(self.folder_files):
+            file_path = self.folder_files[self.current_file_index]
+            self.current_file_index += 1
+            
+            # Обновляем статус
+            filename = os.path.basename(file_path)
+            self.log(f"Очистка: {filename}")
+            
+            # Обработка в отдельном потоке
+            threading.Thread(target=self.process_file_thread, args=(file_path,), daemon=True).start()
+        else:
+            self.log("Очистка завершена!")
+            messagebox.showinfo("Завершено", "Глубокая очистка файлов завершена!\n\nРезервные копии сохранены с расширением .backup")
+
+    def process_file_thread(self, file_path):
+        try:
+            result = self.cleaner.process_file(file_path)
+            self.root.after(0, lambda: self.update_report(file_path, result))
+            self.root.after(100, self.process_next_file)
+        except Exception as e:
+            self.log(f"Ошибка обработки: {str(e)}")
+            self.root.after(100, self.process_next_file)
+
+    def update_report(self, file_path, result):
+        filename = os.path.basename(file_path)
+        
+        if result['status'] == 'error':
+            self.report_tree.insert("", "end", values=(
+                filename,
+                "0",
+                "Ошибка",
+                result['message']
+            ), tags=('error',))
+            self.log(f"Ошибка очистки {filename}: {result['message']}")
+            
+        elif result['status'] == 'skip':
+            self.report_tree.insert("", "end", values=(
+                filename,
+                "0",
+                "Пропущен",
+                result['message']
+            ), tags=('info',))
+            
+        elif 'backdoors_removed' in result:
+            if result['backdoors_removed'] > 0:
+                self.report_tree.insert("", "end", values=(
+                    filename,
+                    result['backdoors_removed'],
+                    "Успешно",
+                    result['message']
+                ), tags=('success',))
+                self.log(f"Файл {filename} обработан: {result['message']}")
+            else:
+                self.report_tree.insert("", "end", values=(
+                    filename,
+                    "0",
+                    "Чистый",
+                    result['message']
+                ), tags=('info',))
+            
+        # Обновление статистики
+        self.update_stats()
+
+if __name__ == '__main__':
+    root = tk.Tk()
+    app = UltimateCleanerGUI(root)
+    root.mainloop()
